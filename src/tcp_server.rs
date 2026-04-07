@@ -1,42 +1,49 @@
-use std::io::{self, Read};
-use std::net::{TcpListener, ToSocketAddrs};
-use std::thread;
+use tokio::net::TcpListener;
+use std::sync::Arc;
+use crate::tcp_connection::TCPConnection;
+use crate::tcp_connection_codec::Codec;
 
-pub struct TCPServer { }
+pub struct TCPServer<C: Codec> {
+    codec: Arc<C>,
+}
 
-impl TCPServer {
-    pub fn new() -> Self {
-        Self { }
+impl<C: Codec> TCPServer<C> {
+    pub fn new(codec: C) -> Self {
+        Self {
+            codec: Arc::new(codec),
+        }
     }
 
-    pub fn run<A: ToSocketAddrs>(&self, address: A) -> io::Result<()> {
-        let listener = TcpListener::bind(address)?;
+    pub async fn run<F>(&self, addr: &str, handler: F)
+    where
+        F: Fn(TCPConnection, Vec<u8>) + Send + Sync + 'static,
+    {
+        let listener = TcpListener::bind(addr).await.unwrap();
+        let handler = Arc::new(handler);
 
-        thread::spawn(move || {
-            for stream in listener.incoming() {
-                let mut stream = stream.unwrap();
-                println!("[TCPServer] New connection: {0}", stream.peer_addr().unwrap());
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let connection = TCPConnection::new(stream);
+            let codec = self.codec.clone();
+            let handler = handler.clone();
 
-                let mut buffer = [0u8; 1024];
+            tokio::spawn(async move {
+                let mut buffer = Vec::new();
+                let mut temp = [0u8; 1024];
 
                 loop {
-                    match stream.read(&mut buffer) {
-                        Ok(0) => {
-                            println!("[TCPServer] Connection closed by other side");
-                            break;
-                        }
-                        Ok(n) => {
-                            println!("[TCPServer] Read: {}", String::from_utf8_lossy(&buffer[..n]));
-                        }
-                        Err(e) => {
-                            eprint!("[TCPServer] Read error: {}", e);
-                            break;
-                        }
+                    let n = connection.read(&mut temp).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+
+                    buffer.extend_from_slice(&temp[..n]);
+
+                    while let Some(packet) = codec.try_decode(&mut buffer) {
+                        handler(connection.clone(), packet);
                     }
                 }
-            }
-        });
-
-        Ok(())
+            });
+        }
     }
 }

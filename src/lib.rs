@@ -1,18 +1,38 @@
+use crate::tcp_client::TCPClient;
+use crate::tcp_connection_codec::{PacketCodec, StreamCodec};
+use crate::tcp_server::TCPServer;
+
 mod tcp_server;
 mod tcp_client;
+mod tcp_connection;
+mod tcp_connection_codec;
 
 #[cfg(test)]
 mod tests {
-    use crate::tcp_server::*;
-    use crate::tcp_client::*;
-
     #[test]
     fn test() {
-        let server = TCPServer::new();
-        server.run("127.0.0.1:5555").expect("Cannot run server");
-
-        let mut client = TCPClient::new();
-        client.connect("127.0.0.1:5555").expect("Cannot connect client");
-        client.send("Hello, world!".as_bytes()).expect("Cannot send message");
+        super::test();
     }
+}
+
+#[tokio::main]
+async fn test() {
+    let server = TCPServer::new(PacketCodec);
+
+    tokio::spawn(async move {
+        server.run("127.0.0.1:9000", |connection, data| {
+            println!("server got: {:?}", data);
+            tokio::spawn(async move {
+                let _ = connection.send(b"pong").await;
+            });
+        }).await;
+    });
+
+    let client = TCPClient::new(PacketCodec);
+
+    let connection = client.connect("127.0.0.1:9000", |data| {
+        println!("client got: {:?}", data);
+    }).await;
+
+    client.send(&connection, b"ping").await;
 }
